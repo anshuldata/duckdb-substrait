@@ -971,6 +971,11 @@ substrait::Rel *DuckDBToSubstrait::TransformComparisonJoin(LogicalOperator &dop)
 	case JoinType::OUTER:
 		sjoin->set_type(substrait::JoinRel::JoinType::JoinRel_JoinType_JOIN_TYPE_OUTER);
 		break;
+	case JoinType::ANTI:
+	case JoinType::MARK:
+	case JoinType::RIGHT_SEMI:
+	case JoinType::RIGHT_ANTI:
+		throw NotImplementedException("Unsupported join type " + JoinTypeToString(djoin.join_type));
 	default:
 		throw NotImplementedException("Unsupported join type " + JoinTypeToString(djoin.join_type));
 	}

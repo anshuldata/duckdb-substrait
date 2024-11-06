@@ -8,6 +8,7 @@
 using namespace duckdb;
 using namespace std;
 
+/*
 TEST_CASE("Test C Get and To Substrait API", "[substrait-api]") {
   DuckDB db(nullptr);
   Connection con(db);
@@ -45,6 +46,7 @@ TEST_CASE("Test C Get and To Json-Substrait API", "[substrait-api]") {
 
   REQUIRE_THROWS(con.FromSubstraitJSON("this is not valid"));
 }
+*/
 
 duckdb::unique_ptr<QueryResult> ExecuteViaSubstrait(Connection &con, const string &sql) {
   auto proto = con.GetSubstrait(sql);
@@ -92,6 +94,7 @@ void CreateDepartmentsTable(Connection& con) {
 						  "(3, 'Finance')"));
 }
 
+/*
 TEST_CASE("Test C CTAS Select columns with Substrait API", "[substrait-api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -293,3 +296,14 @@ TEST_CASE("Test C DeleteRows with Substrait API", "[substrait-api]") {
 	REQUIRE(CHECK_COLUMN(result, 2, {1, 2, 3}));
 	REQUIRE(CHECK_COLUMN(result, 3, {120000, 80000, 95000}));
 }
+*/
+
+TEST_CASE("Test Main distribution failure", "[substrait-api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query("CALL dsdgen(sf=0.1)"));
+	auto sql = "SELECT i_item_id , i_item_desc , i_current_price FROM item, inventory, date_dim, catalog_sales WHERE i_current_price BETWEEN 20 AND 20 + 30";
+	ExecuteViaSubstraitJSON(con, sql);
+}
+

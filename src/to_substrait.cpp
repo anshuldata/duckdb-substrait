@@ -426,7 +426,7 @@ void DuckDBToSubstrait::TransformBetweenExpression(Expression &dexpr, substrait:
 	args_types.emplace_back(DuckToSubstraitType(dcomp.lower->return_type));
 	args_types.emplace_back(DuckToSubstraitType(dcomp.upper->return_type));
 	scalar_fun->set_function_reference(RegisterFunction("between", args_types));
-
+	
 	auto sarg = scalar_fun->add_arguments();
 	TransformExpr(*dcomp.input, *sarg->mutable_value(), 0);
 	sarg = scalar_fun->add_arguments();
@@ -963,19 +963,14 @@ substrait::Rel *DuckDBToSubstrait::TransformComparisonJoin(LogicalOperator &dop)
 		sjoin->set_type(substrait::JoinRel::JoinType::JoinRel_JoinType_JOIN_TYPE_RIGHT);
 		break;
 	case JoinType::SINGLE:
-		sjoin->set_type(substrait::JoinRel::JoinType::JoinRel_JoinType_JOIN_TYPE_LEFT_SINGLE);
+		sjoin->set_type(substrait::JoinRel::JoinType::JoinRel_JoinType_JOIN_TYPE_SINGLE);
 		break;
 	case JoinType::SEMI:
-		sjoin->set_type(substrait::JoinRel::JoinType::JoinRel_JoinType_JOIN_TYPE_LEFT_SEMI);
+		sjoin->set_type(substrait::JoinRel::JoinType::JoinRel_JoinType_JOIN_TYPE_SEMI);
 		break;
 	case JoinType::OUTER:
 		sjoin->set_type(substrait::JoinRel::JoinType::JoinRel_JoinType_JOIN_TYPE_OUTER);
 		break;
-	case JoinType::ANTI:
-	case JoinType::MARK:
-	case JoinType::RIGHT_SEMI:
-	case JoinType::RIGHT_ANTI:
-		throw NotImplementedException("Unsupported join type " + JoinTypeToString(djoin.join_type));
 	default:
 		throw NotImplementedException("Unsupported join type " + JoinTypeToString(djoin.join_type));
 	}
@@ -1386,8 +1381,7 @@ substrait::Rel *DuckDBToSubstrait::TransformDistinct(LogicalOperator &dop) {
 		set_op->set_op(substrait::SetRel_SetOp::SetRel_SetOp_SET_OP_INTERSECTION_PRIMARY);
 		break;
 	default:
-		throw NotImplementedException("Found unexpected child type in Distinct operator " +
-		                              LogicalOperatorToString(set_operation_p->type));
+		throw NotImplementedException("Found unexpected child type in Distinct operator");
 	}
 	auto &set_operation = set_operation_p->Cast<LogicalSetOperation>();
 
@@ -1423,107 +1417,6 @@ substrait::Rel *DuckDBToSubstrait::TransformIntersect(LogicalOperator &dop) {
 	return rel;
 }
 
-substrait::Rel *DuckDBToSubstrait::TransformCreateTable(LogicalOperator &dop) {
-	auto rel = new substrait::Rel();
-	auto &create_table = dop.Cast<LogicalCreateTable>();
-	auto &create_info = create_table.info.get()->Base();
-	if (create_table.children.size() != 1) {
-		if (create_table.children.size() == 0) {
-			throw NotImplementedException("Create table without children not implemented");
-		}
-		throw InternalException("Create table with more than one child is not supported");
-	}
-
-	auto schema = new substrait::NamedStruct();
-	auto type_info = new substrait::Type_Struct();
-	for (auto &name : create_info.columns.GetColumnNames()) {
-		schema->add_names(name);
-	}
-	for (auto &col_type : create_info.columns.GetColumnTypes()) {
-		auto s_type = DuckToSubstraitType(col_type, nullptr, false);
-		*type_info->add_types() = s_type;
-	}
-	schema->set_allocated_struct_(type_info);
-
-	// This is CreateTableAsSelect
-	substrait::Rel *input = TransformOp(*create_table.children[0]);
-	auto write = rel->mutable_write();
-	write->set_allocated_table_schema(schema);
-	write->set_allocated_input(input);
-	write->set_op(substrait::WriteRel::WriteOp::WriteRel_WriteOp_WRITE_OP_CTAS);
-	auto named_table = write->mutable_named_table();
-	named_table->add_names(create_info.schema);
-	named_table->add_names(create_info.table);
-
-	return rel;
-}
-
-void DuckDBToSubstrait::SetTableSchema(const TableCatalogEntry &table, substrait::NamedStruct *schema) {
-	for (auto &name : table.GetColumns().GetColumnNames()) {
-		schema->add_names(name);
-	}
-	auto type_info = new substrait::Type_Struct();
-	type_info->set_nullability(substrait::Type_Nullability_NULLABILITY_REQUIRED);
-	for (auto &col_type : table.GetColumns().GetColumnTypes()) {
-		auto s_type = DuckToSubstraitType(col_type, nullptr, false);
-		*type_info->add_types() = s_type;
-	}
-	schema->set_allocated_struct_(type_info);
-}
-
-void DuckDBToSubstrait::SetNamedTable(const TableCatalogEntry &table, substrait::WriteRel *writeRel) {
-	auto named_table = writeRel->mutable_named_table();
-	named_table->add_names(table.schema.name);
-	named_table->add_names(table.name);
-}
-
-substrait::Rel *DuckDBToSubstrait::TransformInsertTable(LogicalOperator &dop) {
-	auto rel = new substrait::Rel();
-	auto &insert_table = dop.Cast<LogicalInsert>();
-	if (insert_table.children.size() != 1) {
-		throw InternalException("insert table expected one child, found " + to_string(insert_table.children.size()));
-	}
-
-	auto writeRel = rel->mutable_write();
-	writeRel->set_op(substrait::WriteRel::WriteOp::WriteRel_WriteOp_WRITE_OP_INSERT);
-	writeRel->set_output(substrait::WriteRel::OUTPUT_MODE_NO_OUTPUT);
-
-	SetNamedTable(insert_table.table, writeRel);
-	auto schema = new substrait::NamedStruct();
-	SetTableSchema(insert_table.table, schema);
-	writeRel->set_allocated_table_schema(schema);
-
-	substrait::Rel *input = TransformOp(*insert_table.children[0]);
-	writeRel->set_allocated_input(input);
-	return rel;
-}
-
-substrait::Rel *DuckDBToSubstrait::TransformDeleteTable(LogicalOperator &dop) {
-	auto rel = new substrait::Rel();
-	auto &logical_delete = dop.Cast<LogicalDelete>();
-	auto &table = logical_delete.table;
-	if (logical_delete.children.size() != 1) {
-		throw InternalException("Delete table expected one child, found " + to_string(logical_delete.children.size()));
-	}
-
-	auto writeRel = rel->mutable_write();
-	writeRel->set_op(substrait::WriteRel::WriteOp::WriteRel_WriteOp_WRITE_OP_DELETE);
-	writeRel->set_output(substrait::WriteRel::OUTPUT_MODE_NO_OUTPUT);
-
-	auto named_table = writeRel->mutable_named_table();
-	named_table->add_names(table.schema.name);
-	named_table->add_names(table.name);
-
-	SetNamedTable(logical_delete.table, writeRel);
-	auto schema = new substrait::NamedStruct();
-	SetTableSchema(logical_delete.table, schema);
-	writeRel->set_allocated_table_schema(schema);
-
-	substrait::Rel *input = TransformOp(*logical_delete.children[0]);
-	writeRel->set_allocated_input(input);
-	return rel;
-}
-
 substrait::Rel *DuckDBToSubstrait::TransformOp(LogicalOperator &dop) {
 	switch (dop.type) {
 	case LogicalOperatorType::LOGICAL_FILTER:
@@ -1554,12 +1447,6 @@ substrait::Rel *DuckDBToSubstrait::TransformOp(LogicalOperator &dop) {
 		return TransformIntersect(dop);
 	case LogicalOperatorType::LOGICAL_DUMMY_SCAN:
 		return TransformDummyScan();
-	case LogicalOperatorType::LOGICAL_CREATE_TABLE:
-		return TransformCreateTable(dop);
-	case LogicalOperatorType::LOGICAL_INSERT:
-		return TransformInsertTable(dop);
-	case LogicalOperatorType::LOGICAL_DELETE:
-		return TransformDeleteTable(dop);
 	default:
 		throw NotImplementedException(LogicalOperatorToString(dop.type));
 	}
@@ -1570,23 +1457,8 @@ static bool IsSetOperation(const LogicalOperator &op) {
 	       op.type == LogicalOperatorType::LOGICAL_INTERSECT;
 }
 
-static bool IsRowModificationOperator(const LogicalOperator &op) {
-	switch (op.type) {
-	case LogicalOperatorType::LOGICAL_INSERT:
-	case LogicalOperatorType::LOGICAL_DELETE:
-	case LogicalOperatorType::LOGICAL_UPDATE:
-		return true;
-	default:
-		return false;
-	}
-}
-
 substrait::RelRoot *DuckDBToSubstrait::TransformRootOp(LogicalOperator &dop) {
 	auto root_rel = new substrait::RelRoot();
-	if (IsRowModificationOperator(dop)) {
-		root_rel->set_allocated_input(TransformOp(dop));
-		return root_rel;
-	}
 	LogicalOperator *current_op = &dop;
 	bool weird_scenario = current_op->type == LogicalOperatorType::LOGICAL_PROJECTION &&
 	                      current_op->children[0]->type == LogicalOperatorType::LOGICAL_TOP_N;
@@ -1605,9 +1477,6 @@ substrait::RelRoot *DuckDBToSubstrait::TransformRootOp(LogicalOperator &dop) {
 			continue;
 		}
 		if (current_op->children.size() != 1) {
-			if (current_op->type == LogicalOperatorType::LOGICAL_CREATE_TABLE) {
-				break;
-			}
 			throw InternalException("Root node has more than 1, or 0 children (%d) up to "
 			                        "reaching a projection node. Type %d",
 			                        current_op->children.size(), current_op->type);
